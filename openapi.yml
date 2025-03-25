@@ -1,0 +1,44 @@
+openapi: 3.0.0
+components:
+  schemas:
+    BodyAppointmentRequest:
+      type: object
+      properties:
+        insuredId:
+          type: string
+          description: 5-digit insured code (can have leading zeros)
+          example: '00123'
+        scheduleId:
+          type: number
+          description: ID of the appointment slot
+          example: 100
+        countryISO:
+          type: string
+          enum:
+            - PE
+            - CL
+          description: Country identifier
+          example: PE
+    AppointmentResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              appointmentId:
+                type: string
+                description: Unique ID of the appointment
+              insuredId:
+                type: string
+                description: 5-digit insured code
+              status:
+                type: string
+                description: Current status of the appointment
+  securitySchemes: {}
+info:
+  title: Appointment Service
+  description: Este es un servicio Node JS con serverless framework.
+  version: 1.0.0
+paths: {}

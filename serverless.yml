@@ -1,0 +1,367 @@
+# "org" ensures this Service is used with the correct Serverless Framework Access Key.
+org: blackhmr
+# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
+app: apponintment-service
+service: appointment-service
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:Query
+      Resource: !GetAtt AppointmentsTable.Arn
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+        - sqs:DeleteMessage
+        - sqs:GetQueueAttributes
+      Resource:
+        - !GetAtt SQSQueuePE.Arn
+        - !GetAtt SQSQueueCL.Arn
+        - !GetAtt AppointmentQueue.Arn
+    - Effect: Allow
+      Action:
+        - sns:Publish
+      Resource:
+        - !Ref SNSTopicPE
+        - !Ref SNSTopicCL
+    - Effect: Allow
+      Action:
+        - events:PutEvents
+      Resource: '*'
+    - Effect: Allow
+      Action:
+        - rds-data:ExecuteStatement
+        - rds-data:BatchExecuteStatement
+        - rds-data:BeginTransaction
+        - rds-data:CommitTransaction
+        - rds-data:RollbackTransaction
+      Resource: "*" 
+    - Effect: Allow
+      Action:
+        - secretsmanager:GetSecretValue
+      Resource:
+        - 'arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:secret-rds-database-pe-44yUME'
+        - 'arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:aws-secret-rds-cl-lm2gYQ'
+  environment:
+    SNS_TOPIC_PE_ARN: arn:aws:sns:${aws:region}:${aws:accountId}:SNS_PE
+    SNS_TOPIC_CL_ARN: arn:aws:sns:${aws:region}:${aws:accountId}:SNS_CL
+    EVENT_BUS_NAME: AppointmentBus
+    RDS_CLUSTER_PE_ARN: arn:aws:rds:${aws:region}:${aws:accountId}:cluster:rds-database-pe
+    RDS_SECRET_PE_ARN: arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:secret-rds-database-pe-44yUME
+    RDS_CLUSTER_CL_ARN: arn:aws:rds:${aws:region}:${aws:accountId}:cluster:rds-database-cl
+    RDS_SECRET_CL_ARN: arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:aws-secret-rds-cl-lm2gYQ
+
+plugins:
+  - serverless-openapi-documentation
+
+custom:
+  documentation:
+    version: '1.0.0'
+    title: 'Appointment Service'
+    description: 'Este es un servicio Node JS con serverless framework.'
+    models:
+      - name: BodyAppointmentRequest
+        description: 'Request body for creating an appointment'
+        contentType: application/json
+        schema:
+          type: object
+          properties:
+            insuredId:
+              type: string
+              description: '5-digit insured code (can have leading zeros)'
+              example: '00123'
+            scheduleId:
+              type: number
+              description: 'ID of the appointment slot'
+              example: 100
+            countryISO:
+              type: string
+              enum: ['PE', 'CL']
+              description: 'Country identifier'
+              example: 'PE'
+      - name: AppointmentResponse
+        contentType: application/json
+        schema:
+          type: object
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+                properties:
+                  appointmentId:
+                    type: string
+                    description: 'Unique ID of the appointment'
+                  insuredId:
+                    type: string
+                    description: '5-digit insured code'
+                  status:
+                    type: string
+                    description: 'Current status of the appointment'
+
+functions:
+  appointment:
+    handler: src/application/handlers/appointment.handler
+    package:
+      include:
+        - src/application/handlers/appointment.ts
+    events:
+      - http:
+          path: appointments
+          method: post
+          documentation:
+            summary: 'Registrar cita'
+            description: 'Registra una cita.'
+            operationId: 'createAppointment'
+            requestBody:
+              description: "detalle de cita"
+              required: true
+              content:
+                application/json:
+                  schema:
+                    $ref: '#/components/schemas/BodyAppointmentRequest'
+            methodResponses:
+              - statusCode: 200
+                responseBody:
+                  description: 'Appointment created.'
+                responseModels:
+                  application/json: 'PostOkResponse'
+              - statusCode: 400
+                responseBody:
+                  description: 'Missing required fields.'
+                responseModels:
+                  application/json: 'PostBadRequestResponse'
+              - statusCode: 500
+                responseBody:
+                  description: 'Internal server error.'
+                responseModels:
+                  application/json: 'PostErrorResponse'
+      - http:
+          path: appointments/{insuredId}
+          method: get
+          documentation:
+            summary: 'Listar citas'
+            description: 'Lista citas por id de paciente.'
+            operationId: 'getAppointmentByInsuredId'
+            pathParams:
+              - name: 'insuredId'
+                description: 'Código de paciente.'
+                required: true
+                schema:
+                  type: 'string'
+            methodResponses:
+              - statusCode: 200
+                responseBody:
+                  description: 'Cita creada.'
+                responseModels:
+                  application/json: 'AppointmentResponse'
+
+      - sqs:
+          arn: !GetAtt AppointmentQueue.Arn
+
+  appointmentPE:
+    handler: src/application/handlers/appointmentPE.handler
+    package:
+      include:
+        - src/application/handlers/appointmentPE.ts
+        - src/application/dtos/**
+        - src/application/services/**
+        - src/config/**
+        - src/domain/**
+        - src/infrastructure/**
+    events:
+      - sqs:
+          arn: !GetAtt SQSQueuePE.Arn
+      - eventBridge:
+          eventBus: !Ref EventBridgeBus
+          pattern:
+            source:
+              - 'appointment.service'
+            detail-type:
+              - 'AppointmentPE'
+
+  appointmentCL:
+    handler: src/application/handlers/appointmentCl.handler
+    package:
+      include:
+        - src/application/handlers/appointmentCL.ts
+        - src/application/dtos/**
+        - src/application/services/**
+        - src/config/**
+        - src/domain/**
+        - src/infrastructure/**
+    events:
+      - sqs:
+          arn: !GetAtt SQSQueueCL.Arn
+      - eventBridge:
+          eventBus: !Ref EventBridgeBus
+          pattern:
+            source:
+              - 'appointment.service'
+            detail-type:
+              - 'AppointmentCL'
+
+resources:
+  Resources:
+    AppointmentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: AppointmentsTable
+        AttributeDefinitions:
+          - AttributeName: insuredId
+            AttributeType: S
+          - AttributeName: scheduleId
+            AttributeType: N
+          - AttributeName: countryISO
+            AttributeType: S
+          - AttributeName: status
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+          - AttributeName: updatedAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: insuredId
+            KeyType: HASH
+          - AttributeName: scheduleId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+
+        GlobalSecondaryIndexes:
+          - IndexName: CountryIndex
+            KeySchema:
+              - AttributeName: countryISO
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: StatusIndex
+            KeySchema:
+              - AttributeName: status
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: CreatedAtIndex
+            KeySchema:
+              - AttributeName: createdAt
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: UpdatedAtIndex
+            KeySchema:
+              - AttributeName: updatedAt
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    SNSTopicPE:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: SNS_PE
+
+    SNSTopicCL:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: SNS_CL
+
+    SQSQueuePE:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_PE
+
+    SQSQueueCL:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_CL
+    
+    SQSQueuePEPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref SQSQueuePE
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SQSQueuePE.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SNSTopicPE
+
+    SQSQueueCLPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref SQSQueueCL
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SQSQueueCL.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SNSTopicCL
+
+    AppointmentQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: AppointmentQueue
+
+    AppointmentQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref AppointmentQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt AppointmentQueue.Arn
+
+    SNSToSQSSubscriptionPE:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SNSTopicPE
+        Protocol: sqs
+        Endpoint: !GetAtt SQSQueuePE.Arn
+
+    SNSToSQSSubscriptionCL:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SNSTopicCL
+        Protocol: sqs
+        Endpoint: !GetAtt SQSQueueCL.Arn
+
+    EventBridgeBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: AppointmentBus
+
+    EventBridgeRuleToSQS:
+      Type: AWS::Events::Rule
+      Properties:
+        EventBusName: !Ref EventBridgeBus
+        EventPattern:
+          source:
+            - 'appointment.service'
+          detail-type:
+            - 'AppointmentCompleted'
+        State: ENABLED
+        Targets:
+          - Arn: !GetAtt AppointmentQueue.Arn
+            Id: 'AppointmentQueue_Target'
