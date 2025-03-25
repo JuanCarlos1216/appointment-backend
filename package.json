@@ -12,7 +12,6 @@
     "preset": "ts-jest",
     "testEnvironment": "node"
   },
-  "author": "Hector Calero Saico",
   "license": "ISC",
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.772.0",
